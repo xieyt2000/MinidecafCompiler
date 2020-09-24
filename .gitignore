@@ -1,1 +1,7 @@
 __pycache__
+*.c
+*.s
+*.out
+.DS_Store
+generated
+\!a!.txt

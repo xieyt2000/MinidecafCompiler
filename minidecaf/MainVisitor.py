@@ -2,6 +2,7 @@ from .generated.MiniDecafVisitor import MiniDecafVisitor
 from .generated.MiniDecafParser import MiniDecafParser
 from antlr4.tree.Tree import TerminalNodeImpl
 from .Type import NoType, IntType
+from .constants import OPERATOR2ASM
 
 
 class MainVisitor(MiniDecafVisitor):
@@ -28,13 +29,40 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitStatement(self, ctx: MiniDecafParser.StatementContext):
         self.visit(ctx.expression())
-        self.asm_str += "\tret\n"  # ret
+        self.__ret()
         return NoType()
 
     def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
-        num: TerminalNodeImpl = ctx.Integer()
-        # overflow
-        if int(num.getText()) > 0x7fffffff:
-            raise Exception("Int too large")
-        self.asm_str += f"\tli a0, {num.getText()}\n"  # return value
-        return IntType()
+        return self.visit(ctx.unary())
+
+    def visitUnary(self, ctx: MiniDecafParser.UnaryContext):
+        if len(ctx.children) == 1:  # single number
+            num: TerminalNodeImpl = ctx.Integer()
+            # overflow
+            if int(num.getText()) > 0x7fffffff:
+                raise Exception("Int too large")
+            self.asm_str += f"\tli t0, {num.getText()}\n"
+            self.__push('t0')
+            return IntType()
+        else:  # unary wit operator
+            self.visit(ctx.unary())
+            operator: str = ctx.children[0].getText()
+            self.__pop('t0')
+            self.asm_str += OPERATOR2ASM[operator] + '\n'
+            self.__push('t0')
+            return IntType()
+
+    def __pop(self, reg: str):
+        self.asm_str += (f"# pop {reg}\n"
+                         f"\tlw {reg}, 0(sp)\n"
+                         f"addi sp, sp, 4\n")  # stack ptr
+
+    def __push(self, reg: str):
+        self.asm_str += (f"# push {reg}\n"
+                         f"\taddi sp, sp, -4\n"  # stack ptr
+                         f"\tsw {reg}, 0(sp)\n")
+
+    def __ret(self):
+        self.asm_str += f"# ret\n"
+        self.__pop('a0')
+        self.asm_str += f"\tret\n"

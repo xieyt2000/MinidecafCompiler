@@ -15,7 +15,10 @@ statement
     : 'return' expression ';';
 
 expression
-    : Integer;
+    : unary;
+
+unary
+    : ('-' | '!' | '~') unary | Integer;
 
 
 // lexer

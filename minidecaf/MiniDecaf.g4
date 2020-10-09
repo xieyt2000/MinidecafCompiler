@@ -15,10 +15,24 @@ statement
     : 'return' expression ';';
 
 expression
-    : unary;
+    : additive;
+
+additive
+    : multiplicative
+    | additive ('+'|'-') multiplicative;
+
+multiplicative
+    : unary
+    | multiplicative ('*'|'/'|'%') unary;
 
 unary
-    : ('-' | '!' | '~') unary | Integer;
+    : primary
+    | ('-'|'~'|'!') unary;
+
+primary
+    :  Integer # numPrimary
+    | '(' expression ')' # parenthesizedPrimary
+    ;
 
 
 // lexer

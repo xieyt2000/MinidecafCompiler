@@ -35,7 +35,60 @@ class MainVisitor(MiniDecafVisitor):
         return NoType()
 
     def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
-        return self.visit(ctx.additive())
+        return self.visit(ctx.logical_or())
+
+    def __logic_operation(self, operator: str):
+        self.__pop('t1')
+        self.__pop('t0')
+        self.__set_bool('t1')
+        self.__set_bool('t0')
+        self.asm_str += f"\t{operator} t0, t0, t1\n"
+        self.__push('t0')
+
+    def visitLogical_or(self, ctx: MiniDecafParser.Logical_orContext):
+        if len(ctx.children) > 1:  # or || and
+            self.visit(ctx.logical_or())
+            self.visit(ctx.logical_and())
+            self.__logic_operation('or')
+            return IntType()
+        else:  # and
+            return self.visit(ctx.logical_and())
+
+    def visitLogical_and(self, ctx: MiniDecafParser.Logical_andContext):
+        if len(ctx.children) > 1:  # and || equ
+            self.visit(ctx.logical_and())
+            self.visit(ctx.equality())
+            self.__logic_operation('and')
+            return IntType()
+        else:  # equ
+            return self.visit(ctx.equality())
+
+    def visitEquality(self, ctx: MiniDecafParser.EqualityContext):
+        if len(ctx.children) > 1:  # equ op rel
+            self.visit(ctx.equality())
+            self.visit(ctx.relational())
+            self.__pop('t1')
+            self.__pop('t0')
+            self.asm_str += '\t' + BIOPR2ASM['-'] + '\n'  # t0 = t0 - t1
+            operator: str = ctx.children[1].getText()
+            self.asm_str += '\t' + BIOPR2ASM[operator] + '\n'
+            self.__push('t0')
+            return IntType()
+        else:  # rel
+            return self.visit(ctx.relational())
+
+    def visitRelational(self, ctx: MiniDecafParser.RelationalContext):
+        if len(ctx.children) > 1:  # rel op add
+            self.visit(ctx.relational())
+            self.visit(ctx.additive())
+            self.__pop('t1')
+            self.__pop('t0')
+            operator: str = ctx.children[1].getText()
+            self.asm_str += '\t' + BIOPR2ASM[operator] + '\n'
+            self.__push('t0')
+            return IntType
+        else:  # add
+            return self.visit(ctx.additive())
 
     def visitAdditive(self, ctx: MiniDecafParser.AdditiveContext):
         if len(ctx.children) > 1:  # add op mul
@@ -100,3 +153,6 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += f"# ret\n"
         self.__pop('a0')
         self.asm_str += f"\tret\n"
+
+    def __set_bool(self, reg):  # set a reg to bool according to data stored in it
+        self.asm_str += f"\tsnez {reg}, {reg}\n"

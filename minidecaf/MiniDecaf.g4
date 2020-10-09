@@ -15,7 +15,23 @@ statement
     : 'return' expression ';';
 
 expression
-    : additive;
+    : logical_or;
+
+logical_or
+    : logical_and
+    | logical_or '||' logical_and;
+
+logical_and
+    : equality
+    | logical_and ('&&') equality;
+
+equality
+    : relational
+    | equality ('=='|'!=') relational;
+
+relational
+    : additive
+    | relational ('<'|'>'|'<='|'>=') additive;
 
 additive
     : multiplicative

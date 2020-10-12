@@ -5,25 +5,38 @@ program
     : function EOF;
 
 function
-    : varType Identifier '(' ')' '{' statement '}';
+    : varType Identifier '(' ')' '{' blockItem* '}';
 
 // 'type' conflict with python keyword, so rename to varType
 varType
     : 'int';
 
+blockItem
+    : declaration
+    | statement;
+
 statement
-    : 'return' expression ';';
+    : 'return' expression ';' # retStatement
+    | expression? ';'  # exprStatement
+    ;
+
+declaration
+    : varType Identifier ('=' expression)? ';';
 
 expression
-    : logical_or;
+    : assignment;
 
-logical_or
-    : logical_and
-    | logical_or '||' logical_and;
+assignment
+    : logicalOr
+    | Identifier '=' expression;
 
-logical_and
+logicalOr
+    : logicalAnd
+    | logicalOr '||' logicalAnd;
+
+logicalAnd
     : equality
-    | logical_and ('&&') equality;
+    | logicalAnd ('&&') equality;
 
 equality
     : relational
@@ -48,6 +61,7 @@ unary
 primary
     :  Integer # numPrimary
     | '(' expression ')' # parenthesizedPrimary
+    | Identifier # identPrimary
     ;
 
 

@@ -1,5 +1,6 @@
 from antlr4.tree.Tree import TerminalNodeImpl
 
+from .Symbol import Symbol, SymbolMap
 from .Type import NoType, IntType
 from .constants import UNOPR2ASM, BIOPR2ASM
 from .generated.MiniDecafParser import MiniDecafParser
@@ -7,56 +8,121 @@ from .generated.MiniDecafVisitor import MiniDecafVisitor
 
 
 class MainVisitor(MiniDecafVisitor):
+    class FunctionInfo:
+        name: str
+
+        def __init__(self, name):
+            self.name = name
+            self.local_var_count = 0
+
+    current_function: FunctionInfo
 
     def __init__(self):
         self.contains_main = False
-        self.current_func = ""
         self.asm_str = ""
+        self.symbol_map = SymbolMap()
 
     def visitProgram(self, ctx: MiniDecafParser.ProgramContext):
         self.visit(ctx.function())
         if not self.contains_main:
-            raise Exception("No main function")
+            raise Exception("No main function.")
         return NoType()
 
     def visitFunction(self, ctx: MiniDecafParser.FunctionContext):
-        self.current_func = ctx.Identifier().getText()
-        if self.current_func == "main":
+        self.current_function = self.FunctionInfo(ctx.Identifier().getText())
+        if self.current_function.name == "main":
             self.contains_main = True
         self.asm_str += (f"\t.text\n"  # .text notation
-                         f"\t.global {self.current_func}\n"  # global label
-                         f"{self.current_func}:\n")  # label name
-        self.visit(ctx.statement())
+                         f"\t.global {self.current_function.name}\n"  # global label
+                         f"{self.current_function.name}:\n")  # label name
+        self.asm_str += "# function prologue\n"
+        self.__push('ra')
+        self.__push('fp')
+        self.asm_str += "\tmv fp, sp\n"
+        prologue_end = len(self.asm_str)
+        for block_item in ctx.blockItem():
+            self.visit(block_item)
+        # stack space for local var
+        self.asm_str = (self.asm_str[:prologue_end] +
+                        f"\taddi sp, sp, {-4 * self.current_function.local_var_count}\n"
+                        f"# prologue end\n" +
+                        self.asm_str[prologue_end:])
+        self.asm_str += "# return 0 as default\n"
+        self.__push("zero")
+        self.asm_str += (f"# epilogue\n"
+                         f".exit.{self.current_function.name}:\n"
+                         f"\tlw a0, 0(sp)\n"
+                         f"\tmv sp, fp\n")
+        self.__pop("fp")
+        self.__pop("ra")
+        self.asm_str += "\tret\n\n"
         return NoType()
 
-    def visitStatement(self, ctx: MiniDecafParser.StatementContext):
+    def visitDeclaration(self, ctx: MiniDecafParser.DeclarationContext):
+        name: str = ctx.Identifier().getText()
+        if self.symbol_map.lookup(name) is not None:
+            raise Exception(f"redefine {name}.")
+        self.current_function.local_var_count += 1
+        self.symbol_map.add(name, self.current_function.local_var_count,
+                            IntType())
+        # initialize
+        expression = ctx.expression()
+        if expression is not None:
+            self.visit(expression)
+            self.__pop('t0')
+            self.__write_var(self.symbol_map.lookup(name))
+        return NoType()
+
+    def visitExprStatement(self, ctx: MiniDecafParser.ExprStatementContext):
+        expresion = ctx.expression()
+        if expresion is not None:
+            self.visit(ctx.expression())
+            self.__pop('t0')  # expression won't be used again
+        return NoType()
+
+    def visitRetStatement(self, ctx: MiniDecafParser.RetStatementContext):
         self.visit(ctx.expression())
-        self.__ret()
+        self.asm_str += f"\tj .exit.{self.current_function.name}\n"
         return NoType()
 
     def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
-        return self.visit(ctx.logical_or())
+        return self.visit(ctx.assignment())
+
+    def visitAssignment(self, ctx: MiniDecafParser.AssignmentContext):
+        if len(ctx.children) == 1:  # or
+            return self.visit(ctx.logicalOr())
+        # ident = expression
+        name: str = ctx.Identifier().getText()
+        var = self.symbol_map.lookup(name)
+        if var is None:
+            raise Exception(f"{name} is undefined.")
+        self.visit(ctx.expression())
+        self.__pop('t0')
+        self.__write_var(var)
+        self.__push('t0')
+        return var.sym_type
 
     def __logic_operation(self, operator: str):
         self.__pop('t1')
         self.__pop('t0')
         self.__set_bool('t1')
         self.__set_bool('t0')
-        self.asm_str += f"\t{operator} t0, t0, t1\n"
+        self.asm_str += (f"# calculate {operator}\n"
+                         f"\t{operator} t0, t0, t1\n")
         self.__push('t0')
 
-    def visitLogical_or(self, ctx: MiniDecafParser.Logical_orContext):
+    def visitLogicalOr(self, ctx: MiniDecafParser.LogicalOrContext):
         if len(ctx.children) > 1:  # or || and
-            self.visit(ctx.logical_or())
-            self.visit(ctx.logical_and())
+            self.visit(ctx.logicalOr())
+            self.visit(ctx.logicalAnd())
             self.__logic_operation('or')
             return IntType()
         else:  # and
-            return self.visit(ctx.logical_and())
+            return self.visit(ctx.logicalAnd())
 
-    def visitLogical_and(self, ctx: MiniDecafParser.Logical_andContext):
+    def visitLogicalAnd(self, ctx: MiniDecafParser.LogicalAndContext):
         if len(ctx.children) > 1:  # and || equ
-            self.visit(ctx.logical_and())
+            self.visit(ctx.logicalAnd())
             self.visit(ctx.equality())
             self.__logic_operation('and')
             return IntType()
@@ -69,9 +135,10 @@ class MainVisitor(MiniDecafVisitor):
             self.visit(ctx.relational())
             self.__pop('t1')
             self.__pop('t0')
-            self.asm_str += '\t' + BIOPR2ASM['-'] + '\n'  # t0 = t0 - t1
             operator: str = ctx.children[1].getText()
-            self.asm_str += '\t' + BIOPR2ASM[operator] + '\n'
+            self.asm_str += (f"# calculate {operator}\n"
+                             f"\t{BIOPR2ASM['-']}\n"  # t0 = t0 - t1
+                             f"\t{BIOPR2ASM[operator]}\n")
             self.__push('t0')
             return IntType()
         else:  # rel
@@ -84,7 +151,8 @@ class MainVisitor(MiniDecafVisitor):
             self.__pop('t1')
             self.__pop('t0')
             operator: str = ctx.children[1].getText()
-            self.asm_str += '\t' + BIOPR2ASM[operator] + '\n'
+            self.asm_str += (f"# calculate {operator}\n"
+                             f"\t{BIOPR2ASM[operator]}\n")
             self.__push('t0')
             return IntType
         else:  # add
@@ -97,7 +165,8 @@ class MainVisitor(MiniDecafVisitor):
             self.__pop('t1')
             self.__pop('t0')
             operator: str = ctx.children[1].getText()
-            self.asm_str += '\t' + BIOPR2ASM[operator] + '\n'
+            self.asm_str += (f"# calculate {operator}\n"
+                             f"\t{BIOPR2ASM[operator]}\n")
             self.__push("t0")
             return IntType()
         else:  # mul
@@ -110,7 +179,8 @@ class MainVisitor(MiniDecafVisitor):
             operator: str = ctx.children[1].getText()
             self.__pop('t1')
             self.__pop('t0')
-            self.asm_str += '\t' + BIOPR2ASM[operator] + '\n'
+            self.asm_str += (f"# calculate {operator}\n"
+                             f"\t{BIOPR2ASM[operator]}\n")
             self.__push("t0")
             return IntType()
         else:  # una
@@ -123,7 +193,8 @@ class MainVisitor(MiniDecafVisitor):
             self.visit(ctx.unary())
             operator: str = ctx.children[0].getText()
             self.__pop('t0')
-            self.asm_str += '\t' + UNOPR2ASM[operator] + '\n'
+            self.asm_str += (f"# calculate {operator}\n"
+                             f"\t{UNOPR2ASM[operator]}\n")
             self.__push('t0')
             return IntType()
 
@@ -131,13 +202,23 @@ class MainVisitor(MiniDecafVisitor):
         num: TerminalNodeImpl = ctx.Integer()
         # overflow
         if int(num.getText()) > 0x7fffffff:
-            raise Exception("Int too large")
-        self.asm_str += f"\tli t0, {num.getText()}\n"
+            raise Exception(f"{int(num.getText())} is too large for int.")
+        self.asm_str += (f"# load number {num}\n"
+                         f"\tli t0, {num.getText()}\n")
         self.__push('t0')
         return IntType()
 
     def visitParenthesizedPrimary(self, ctx: MiniDecafParser.ParenthesizedPrimaryContext):
         return self.visit(ctx.expression())
+
+    def visitIdentPrimary(self, ctx: MiniDecafParser.IdentPrimaryContext):
+        name: str = ctx.Identifier().getText()
+        var = self.symbol_map.lookup(name)
+        if var is None:
+            raise Exception(f"{name} is undefined.")
+        self.__read_var(var)
+        self.__push('t0')
+        return var.sym_type
 
     def __pop(self, reg: str):
         self.asm_str += (f"# pop {reg}\n"
@@ -149,10 +230,14 @@ class MainVisitor(MiniDecafVisitor):
                          f"\taddi sp, sp, -4\n"  # stack ptr
                          f"\tsw {reg}, 0(sp)\n")
 
-    def __ret(self):
-        self.asm_str += f"# ret\n"
-        self.__pop('a0')
-        self.asm_str += f"\tret\n"
-
     def __set_bool(self, reg):  # set a reg to bool according to data stored in it
-        self.asm_str += f"\tsnez {reg}, {reg}\n"
+        self.asm_str += (f"# set bool\n"
+                         f"\tsnez {reg}, {reg}\n")
+
+    def __write_var(self, var: Symbol):
+        self.asm_str += (f"# write variable {var.name}\n"
+                         f"\tsw t0, {var.offset}(fp)\n")
+
+    def __read_var(self, symbol: Symbol):
+        self.asm_str += (f"# read variable {symbol.name}\n"
+                         f"\tlw t0, {symbol.offset}(fp)\n")

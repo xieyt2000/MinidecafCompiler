@@ -18,17 +18,19 @@ blockItem
 statement
     : 'return' expression ';' # retStatement
     | expression? ';'  # exprStatement
+    | 'if' '(' expression ')' statement ('else' statement)? # ifStatement
     ;
 
 declaration
     : varType Identifier ('=' expression)? ';';
 
 expression
-    : assignment;
+    : Identifier '=' expression
+    | conditional;
 
-assignment
+conditional
     : logicalOr
-    | Identifier '=' expression;
+    | logicalOr '?' expression ':' conditional;
 
 logicalOr
     : logicalAnd

@@ -21,6 +21,7 @@ class MainVisitor(MiniDecafVisitor):
         self.contains_main = False
         self.asm_str = ""
         self.symbol_map = SymbolMap()
+        self.condition_num = 0  # use for label of conditional statement
 
     def visitProgram(self, ctx: MiniDecafParser.ProgramContext):
         self.visit(ctx.function())
@@ -85,12 +86,26 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += f"\tj .exit.{self.current_function.name}\n"
         return NoType()
 
-    def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
-        return self.visit(ctx.assignment())
+    def visitIfStatement(self, ctx: MiniDecafParser.IfStatementContext):
+        cur_conditional_num = self.condition_num  # self.conditional_num may change during visiting
+        self.condition_num += 1
 
-    def visitAssignment(self, ctx: MiniDecafParser.AssignmentContext):
-        if len(ctx.children) == 1:  # or
-            return self.visit(ctx.logicalOr())
+        self.asm_str += f"# the {cur_conditional_num}th conditional (if)\n"
+        self.visit(ctx.expression())
+        self.__pop("t0")
+        self.asm_str += (f"\tbeqz t0, .else{cur_conditional_num}\n"
+                         f"# then\n")
+        self.visit(ctx.statement(0))
+        self.asm_str += (f"\tj .ifEnd{cur_conditional_num}\n"
+                         f".else{cur_conditional_num}:\n")
+        if len(ctx.statement()) > 1:  # with else statement
+            self.visit(ctx.statement(1))
+        self.asm_str += f".ifEnd{cur_conditional_num}:\n"
+        return NoType()
+
+    def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
+        if len(ctx.children) == 1:  # conditional
+            return self.visit(ctx.conditional())
         # ident = expression
         name: str = ctx.Identifier().getText()
         var = self.symbol_map.lookup(name)
@@ -101,6 +116,22 @@ class MainVisitor(MiniDecafVisitor):
         self.__write_var(var)
         self.__push('t0')
         return var.sym_type
+
+    def visitConditional(self, ctx: MiniDecafParser.ConditionalContext):
+        if len(ctx.children) == 1:  # or
+            return self.visit(ctx.logicalOr())
+        cur_conditional_num = self.condition_num
+        self.condition_num += 1
+        self.asm_str += f"# the {cur_conditional_num}th conditional (ternary)\n"
+        self.visit(ctx.logicalOr())
+        self.__pop('t0')
+        self.asm_str += f"\tbeqz t0, .else{cur_conditional_num}\n"
+        self.visit(ctx.expression())
+        self.asm_str += f"\tj .terEnd{cur_conditional_num}\n" \
+                        f".else{cur_conditional_num}:\n"
+        self.visit(ctx.conditional())
+        self.asm_str += f".terEnd{cur_conditional_num}:\n"
+        return IntType()
 
     def __logic_operation(self, operator: str):
         self.__pop('t1')

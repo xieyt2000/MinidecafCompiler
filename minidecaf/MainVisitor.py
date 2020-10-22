@@ -1,6 +1,6 @@
 from antlr4.tree.Tree import TerminalNodeImpl
 
-from .Symbol import Symbol, SymbolMap
+from .Symbol import Symbol, SymbolTable
 from .Type import NoType, IntType
 from .constants import UNOPR2ASM, BIOPR2ASM
 from .generated.MiniDecafParser import MiniDecafParser
@@ -20,7 +20,7 @@ class MainVisitor(MiniDecafVisitor):
     def __init__(self):
         self.contains_main = False
         self.asm_str = ""
-        self.symbol_map = SymbolMap()
+        self.symbol_table = SymbolTable()
         self.condition_num = 0  # use for label of conditional statement
 
     def visitProgram(self, ctx: MiniDecafParser.ProgramContext):
@@ -41,8 +41,12 @@ class MainVisitor(MiniDecafVisitor):
         self.__push('fp')
         self.asm_str += "\tmv fp, sp\n"
         prologue_end = len(self.asm_str)
+        # new scope
+        self.symbol_table.add_scope()
         for block_item in ctx.blockItem():
             self.visit(block_item)
+        # pop scope
+        self.symbol_table.pop_scope()
         # stack space for local var
         self.asm_str = (self.asm_str[:prologue_end] +
                         f"\taddi sp, sp, {-4 * self.current_function.local_var_count}\n"
@@ -61,17 +65,19 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitDeclaration(self, ctx: MiniDecafParser.DeclarationContext):
         name: str = ctx.Identifier().getText()
-        if self.symbol_map.lookup(name) is not None:
+        if self.symbol_table.lookup_top(name) is not None:
             raise Exception(f"redefine {name}.")
         self.current_function.local_var_count += 1
-        self.symbol_map.add(name, self.current_function.local_var_count,
-                            IntType())
+        symbol = Symbol(
+            name, -4 * self.current_function.local_var_count, IntType()
+        )
+        self.symbol_table.add_symbol(symbol)
         # initialize
         expression = ctx.expression()
         if expression is not None:
             self.visit(expression)
             self.__pop('t0')
-            self.__write_var(self.symbol_map.lookup(name))
+            self.__write_var(symbol)
         return NoType()
 
     def visitExprStatement(self, ctx: MiniDecafParser.ExprStatementContext):
@@ -103,12 +109,19 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += f".ifEnd{cur_conditional_num}:\n"
         return NoType()
 
+    def visitBlockStatement(self, ctx: MiniDecafParser.BlockStatementContext):
+        self.symbol_table.add_scope()
+        for block_item in ctx.blockItem():
+            self.visit(block_item)
+        self.symbol_table.pop_scope()
+        return NoType()
+
     def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
         if len(ctx.children) == 1:  # conditional
             return self.visit(ctx.conditional())
         # ident = expression
         name: str = ctx.Identifier().getText()
-        var = self.symbol_map.lookup(name)
+        var: Symbol = self.symbol_table.lookup_all(name)
         if var is None:
             raise Exception(f"{name} is undefined.")
         self.visit(ctx.expression())
@@ -132,15 +145,6 @@ class MainVisitor(MiniDecafVisitor):
         self.visit(ctx.conditional())
         self.asm_str += f".terEnd{cur_conditional_num}:\n"
         return IntType()
-
-    def __logic_operation(self, operator: str):
-        self.__pop('t1')
-        self.__pop('t0')
-        self.__set_bool('t1')
-        self.__set_bool('t0')
-        self.asm_str += (f"# calculate {operator}\n"
-                         f"\t{operator} t0, t0, t1\n")
-        self.__push('t0')
 
     def visitLogicalOr(self, ctx: MiniDecafParser.LogicalOrContext):
         if len(ctx.children) > 1:  # or || and
@@ -244,7 +248,7 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitIdentPrimary(self, ctx: MiniDecafParser.IdentPrimaryContext):
         name: str = ctx.Identifier().getText()
-        var = self.symbol_map.lookup(name)
+        var = self.symbol_table.lookup_all(name)
         if var is None:
             raise Exception(f"{name} is undefined.")
         self.__read_var(var)
@@ -272,3 +276,12 @@ class MainVisitor(MiniDecafVisitor):
     def __read_var(self, symbol: Symbol):
         self.asm_str += (f"# read variable {symbol.name}\n"
                          f"\tlw t0, {symbol.offset}(fp)\n")
+
+    def __logic_operation(self, operator: str):
+        self.__pop('t1')
+        self.__pop('t0')
+        self.__set_bool('t1')
+        self.__set_bool('t0')
+        self.asm_str += (f"# calculate {operator}\n"
+                         f"\t{operator} t0, t0, t1\n")
+        self.__push('t0')

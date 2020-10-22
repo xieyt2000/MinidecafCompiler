@@ -17,8 +17,9 @@ blockItem
 
 statement
     : 'return' expression ';' # retStatement
-    | expression? ';'  # exprStatement
+    | expression? ';' # exprStatement
     | 'if' '(' expression ')' statement ('else' statement)? # ifStatement
+    | '{' blockItem* '}' # blockStatement
     ;
 
 declaration

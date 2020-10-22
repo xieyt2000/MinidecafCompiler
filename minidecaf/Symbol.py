@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 from .Type import MiniDecafType
 
@@ -26,5 +26,31 @@ class SymbolMap:
     def lookup(self, name):
         return self.__symbol_map.get(name, None)
 
-    def add(self, name, count, syn_type):
-        self.__symbol_map[name] = Symbol(name, -4 * count, syn_type)
+    def add(self, symbol: Symbol):
+        self.__symbol_map[symbol.name] = symbol
+
+
+class SymbolTable:
+    __symbol_table: List[SymbolMap]
+
+    def __init__(self):
+        self.__symbol_table = []
+
+    def lookup_all(self, name):
+        # lookup in inner block first
+        for symbol_map in reversed(self.__symbol_table):
+            if symbol_map.lookup(name) is not None:
+                return symbol_map.lookup(name)
+        return None
+
+    def lookup_top(self, name):
+        return self.__symbol_table[-1].lookup(name)
+
+    def pop_scope(self):
+        self.__symbol_table.pop()
+
+    def add_scope(self):
+        self.__symbol_table.append(SymbolMap())
+
+    def add_symbol(self, symbol: Symbol):
+        self.__symbol_table[-1].add(symbol)

@@ -164,7 +164,7 @@ class MainVisitor(MiniDecafVisitor):
         self.visit(ctx.statement())
         self.symbol_table.pop_scope()
         self.loop_stack.pop()
-        # if continue. run increment and go to conditino
+        # if continue. run increment and go to condition
         self.asm_str += f".continue{cur_loop_count}:\n"
         if for_expression[2] is not None:  # increment
             self.visit(for_expression[2])

@@ -1,3 +1,5 @@
+from typing import List
+
 from antlr4.tree.Tree import TerminalNodeImpl
 
 from .Symbol import Symbol, SymbolTable
@@ -21,7 +23,11 @@ class MainVisitor(MiniDecafVisitor):
         self.contains_main = False
         self.asm_str = ""
         self.symbol_table = SymbolTable()
-        self.condition_num = 0  # use for label of conditional statement
+        # statement count use for label numbering
+        self.condition_count = 0
+        self.loop_count = 0
+
+        self.loop_stack = []  # loop number stack for break and continue
 
     def visitProgram(self, ctx: MiniDecafParser.ProgramContext):
         self.visit(ctx.function())
@@ -93,20 +99,20 @@ class MainVisitor(MiniDecafVisitor):
         return NoType()
 
     def visitIfStatement(self, ctx: MiniDecafParser.IfStatementContext):
-        cur_conditional_num = self.condition_num  # self.conditional_num may change during visiting
-        self.condition_num += 1
+        cur_conditional_count = self.condition_count  # self.conditional_count may change during visiting
+        self.condition_count += 1
 
-        self.asm_str += f"# the {cur_conditional_num}th conditional (if)\n"
+        self.asm_str += f"# the {cur_conditional_count}th conditional (if)\n"
         self.visit(ctx.expression())
         self.__pop("t0")
-        self.asm_str += (f"\tbeqz t0, .else{cur_conditional_num}\n"
+        self.asm_str += (f"\tbeqz t0, .else{cur_conditional_count}\n"
                          f"# then\n")
         self.visit(ctx.statement(0))
-        self.asm_str += (f"\tj .ifEnd{cur_conditional_num}\n"
-                         f".else{cur_conditional_num}:\n")
+        self.asm_str += (f"\tj .ifEnd{cur_conditional_count}\n"
+                         f".else{cur_conditional_count}:\n")
         if len(ctx.statement()) > 1:  # with else statement
             self.visit(ctx.statement(1))
-        self.asm_str += f".ifEnd{cur_conditional_num}:\n"
+        self.asm_str += f".ifEnd{cur_conditional_count}:\n"
         return NoType()
 
     def visitBlockStatement(self, ctx: MiniDecafParser.BlockStatementContext):
@@ -114,6 +120,87 @@ class MainVisitor(MiniDecafVisitor):
         for block_item in ctx.blockItem():
             self.visit(block_item)
         self.symbol_table.pop_scope()
+        return NoType()
+
+    def visitWhileStatement(self, ctx: MiniDecafParser.WhileStatementContext):
+        cur_loop_count = self.loop_count
+        self.loop_count += 1
+        self.asm_str += (f"# the {cur_loop_count} loop (while)\n"
+                         f".continue{cur_loop_count}:\n")
+        self.visit(ctx.expression())
+        self.__pop('t0')
+        self.asm_str += f"\tbeqz t0, .loopEnd{cur_loop_count}\n"
+        self.loop_stack.append(cur_loop_count)
+        self.visit(ctx.statement())
+        self.loop_stack.pop()
+        self.asm_str += f"\tj .continue{cur_loop_count}\n" \
+                        f".loopEnd{cur_loop_count}:\n"
+        return NoType()
+
+    def visitForStatement(self, ctx: MiniDecafParser.ForStatementContext):
+        cur_loop_count = self.loop_count
+        self.loop_count += 1
+        semicolon_count = 0  # count semicolon to determine expression position
+        self.asm_str += f"# the {cur_loop_count} loop (for)\n"
+        for_expression: List[MiniDecafParser.ExpressionContext] = [None] * 3
+        for child in ctx.children:
+            if ';' in child.getText():
+                semicolon_count += 1
+            if isinstance(child, MiniDecafParser.ExpressionContext):
+                for_expression[semicolon_count] = child
+        self.symbol_table.add_scope()
+        if for_expression[0] is not None:  # init with expression
+            self.visit(for_expression[0])
+            self.__pop('t0')  # expression won't be used again
+        if ctx.declaration() is not None:  # init with declaration
+            self.visit(ctx.declaration())
+        self.asm_str += f".loopBegin{cur_loop_count}:\n"
+        if for_expression[1] is not None:  # condition
+            self.visit(for_expression[1])
+            self.__pop('t1')
+            self.asm_str += f"beqz t1, .loopEnd{cur_loop_count}\n"
+        self.loop_stack.append(cur_loop_count)
+        self.symbol_table.add_scope()
+        self.visit(ctx.statement())
+        self.symbol_table.pop_scope()
+        self.loop_stack.pop()
+        # if continue. run increment and go to conditino
+        self.asm_str += f".continue{cur_loop_count}:\n"
+        if for_expression[2] is not None:  # increment
+            self.visit(for_expression[2])
+            self.__pop('t0')
+        self.symbol_table.pop_scope()
+        self.asm_str += f"\tj .loopBegin{cur_loop_count}\n" \
+                        f".loopEnd{cur_loop_count}:\n"
+        return NoType()
+
+    def visitDoWhileStatement(self, ctx: MiniDecafParser.DoWhileStatementContext):
+        cur_loop_count = self.loop_count
+        self.loop_count += 1
+        self.asm_str += f"# the {cur_loop_count} loop (do while)\n"
+        self.asm_str += f".loopBegin{cur_loop_count}:\n"
+        self.loop_stack.append(cur_loop_count)
+        self.visit(ctx.statement())
+        self.loop_stack.pop()
+        self.asm_str += f".continue{cur_loop_count}:\n"
+        self.visit(ctx.expression())
+        self.__pop('t0')  # expression won't be used again
+        self.asm_str += f"\tbnez t0, .loopBegin{cur_loop_count}\n" \
+                        f".loopEnd{cur_loop_count}:\n"
+        return NoType()
+
+    def visitBreakStatement(self, ctx: MiniDecafParser.BreakStatementContext):
+        if not self.loop_stack:
+            raise Exception("break statement is not in any loop.")
+        self.asm_str += (f"# break\n"
+                         f"\tj .loopEnd{self.loop_stack[-1]}\n")
+        return NoType()
+
+    def visitContinueStatement(self, ctx: MiniDecafParser.ContinueStatementContext):
+        if not self.loop_stack:
+            raise Exception("continue statement is not in any loop.")
+        self.asm_str += (f"# contine\n"
+                         f"\tj .continue{self.loop_stack[-1]}\n")
         return NoType()
 
     def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
@@ -133,17 +220,17 @@ class MainVisitor(MiniDecafVisitor):
     def visitConditional(self, ctx: MiniDecafParser.ConditionalContext):
         if len(ctx.children) == 1:  # or
             return self.visit(ctx.logicalOr())
-        cur_conditional_num = self.condition_num
-        self.condition_num += 1
-        self.asm_str += f"# the {cur_conditional_num}th conditional (ternary)\n"
+        cur_conditional_count = self.condition_count
+        self.condition_count += 1
+        self.asm_str += f"# the {cur_conditional_count}th conditional (ternary)\n"
         self.visit(ctx.logicalOr())
         self.__pop('t0')
-        self.asm_str += f"\tbeqz t0, .else{cur_conditional_num}\n"
+        self.asm_str += f"\tbeqz t0, .else{cur_conditional_count}\n"
         self.visit(ctx.expression())
-        self.asm_str += f"\tj .terEnd{cur_conditional_num}\n" \
-                        f".else{cur_conditional_num}:\n"
+        self.asm_str += f"\tj .terEnd{cur_conditional_count}\n" \
+                        f".else{cur_conditional_count}:\n"
         self.visit(ctx.conditional())
-        self.asm_str += f".terEnd{cur_conditional_num}:\n"
+        self.asm_str += f".terEnd{cur_conditional_count}:\n"
         return IntType()
 
     def visitLogicalOr(self, ctx: MiniDecafParser.LogicalOrContext):

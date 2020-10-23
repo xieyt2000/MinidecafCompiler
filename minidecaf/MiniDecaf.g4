@@ -20,6 +20,11 @@ statement
     | expression? ';' # exprStatement
     | 'if' '(' expression ')' statement ('else' statement)? # ifStatement
     | '{' blockItem* '}' # blockStatement
+    | 'while' '(' expression ')' statement # whileStatement
+    | 'for' '(' (declaration | expression? ';') expression? ';' expression? ')' statement # forStatement
+    | 'do' statement 'while' '(' expression ')' ';' # doWhileStatement
+    | 'break' ';' # breakStatement
+    | 'continue' ';' # continueStatement
     ;
 
 declaration
@@ -77,3 +82,7 @@ Identifier
 
 Integer
     : [0-9]+;
+
+// add comment to help debugging
+BlockComment: '/*' .*? '*/' -> skip;
+LINECOMMENT: '//' ~[\r\n]* -> skip;

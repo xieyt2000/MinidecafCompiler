@@ -3,7 +3,7 @@ from typing import List
 from antlr4.tree.Tree import TerminalNodeImpl
 
 from .Symbol import Symbol, SymbolTable
-from .Type import NoType, IntType
+from .Type import NoType, IntType, MiniDecafType
 from .constants import UNOPR2ASM, BIOPR2ASM
 from .generated.MiniDecafParser import MiniDecafParser
 from .generated.MiniDecafVisitor import MiniDecafVisitor
@@ -29,13 +29,13 @@ class MainVisitor(MiniDecafVisitor):
 
         self.loop_stack = []  # loop number stack for break and continue
 
-    def visitProgram(self, ctx: MiniDecafParser.ProgramContext):
+    def visitProgram(self, ctx: MiniDecafParser.ProgramContext) -> MiniDecafType:
         self.visit(ctx.function())
         if not self.contains_main:
             raise Exception("No main function.")
         return NoType()
 
-    def visitFunction(self, ctx: MiniDecafParser.FunctionContext):
+    def visitFunction(self, ctx: MiniDecafParser.FunctionContext) -> MiniDecafType:
         self.current_function = self.FunctionInfo(ctx.Identifier().getText())
         if self.current_function.name == "main":
             self.contains_main = True
@@ -69,7 +69,7 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += "\tret\n\n"
         return NoType()
 
-    def visitDeclaration(self, ctx: MiniDecafParser.DeclarationContext):
+    def visitDeclaration(self, ctx: MiniDecafParser.DeclarationContext) -> MiniDecafType:
         name: str = ctx.Identifier().getText()
         if self.symbol_table.lookup_top(name) is not None:
             raise Exception(f"redefine {name}.")
@@ -86,19 +86,19 @@ class MainVisitor(MiniDecafVisitor):
             self.__write_var(symbol)
         return NoType()
 
-    def visitExprStatement(self, ctx: MiniDecafParser.ExprStatementContext):
+    def visitExprStatement(self, ctx: MiniDecafParser.ExprStatementContext) -> MiniDecafType:
         expresion = ctx.expression()
         if expresion is not None:
             self.visit(ctx.expression())
             self.__pop('t0')  # expression won't be used again
         return NoType()
 
-    def visitRetStatement(self, ctx: MiniDecafParser.RetStatementContext):
+    def visitRetStatement(self, ctx: MiniDecafParser.RetStatementContext) -> MiniDecafType:
         self.visit(ctx.expression())
         self.asm_str += f"\tj .exit.{self.current_function.name}\n"
         return NoType()
 
-    def visitIfStatement(self, ctx: MiniDecafParser.IfStatementContext):
+    def visitIfStatement(self, ctx: MiniDecafParser.IfStatementContext) -> MiniDecafType:
         cur_conditional_count = self.condition_count  # self.conditional_count may change during visiting
         self.condition_count += 1
 
@@ -115,14 +115,14 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += f".ifEnd{cur_conditional_count}:\n"
         return NoType()
 
-    def visitBlockStatement(self, ctx: MiniDecafParser.BlockStatementContext):
+    def visitBlockStatement(self, ctx: MiniDecafParser.BlockStatementContext) -> MiniDecafType:
         self.symbol_table.add_scope()
         for block_item in ctx.blockItem():
             self.visit(block_item)
         self.symbol_table.pop_scope()
         return NoType()
 
-    def visitWhileStatement(self, ctx: MiniDecafParser.WhileStatementContext):
+    def visitWhileStatement(self, ctx: MiniDecafParser.WhileStatementContext) -> MiniDecafType:
         cur_loop_count = self.loop_count
         self.loop_count += 1
         self.asm_str += (f"# the {cur_loop_count} loop (while)\n"
@@ -137,7 +137,7 @@ class MainVisitor(MiniDecafVisitor):
                         f".loopEnd{cur_loop_count}:\n"
         return NoType()
 
-    def visitForStatement(self, ctx: MiniDecafParser.ForStatementContext):
+    def visitForStatement(self, ctx: MiniDecafParser.ForStatementContext) -> MiniDecafType:
         cur_loop_count = self.loop_count
         self.loop_count += 1
         semicolon_count = 0  # count semicolon to determine expression position
@@ -174,7 +174,7 @@ class MainVisitor(MiniDecafVisitor):
                         f".loopEnd{cur_loop_count}:\n"
         return NoType()
 
-    def visitDoWhileStatement(self, ctx: MiniDecafParser.DoWhileStatementContext):
+    def visitDoWhileStatement(self, ctx: MiniDecafParser.DoWhileStatementContext) -> MiniDecafType:
         cur_loop_count = self.loop_count
         self.loop_count += 1
         self.asm_str += f"# the {cur_loop_count} loop (do while)\n"
@@ -189,21 +189,21 @@ class MainVisitor(MiniDecafVisitor):
                         f".loopEnd{cur_loop_count}:\n"
         return NoType()
 
-    def visitBreakStatement(self, ctx: MiniDecafParser.BreakStatementContext):
+    def visitBreakStatement(self, ctx: MiniDecafParser.BreakStatementContext) -> MiniDecafType:
         if not self.loop_stack:
             raise Exception("break statement is not in any loop.")
         self.asm_str += (f"# break\n"
                          f"\tj .loopEnd{self.loop_stack[-1]}\n")
         return NoType()
 
-    def visitContinueStatement(self, ctx: MiniDecafParser.ContinueStatementContext):
+    def visitContinueStatement(self, ctx: MiniDecafParser.ContinueStatementContext) -> MiniDecafType:
         if not self.loop_stack:
             raise Exception("continue statement is not in any loop.")
         self.asm_str += (f"# contine\n"
                          f"\tj .continue{self.loop_stack[-1]}\n")
         return NoType()
 
-    def visitExpression(self, ctx: MiniDecafParser.ExpressionContext):
+    def visitExpression(self, ctx: MiniDecafParser.ExpressionContext) -> MiniDecafType:
         if len(ctx.children) == 1:  # conditional
             return self.visit(ctx.conditional())
         # ident = expression
@@ -217,7 +217,7 @@ class MainVisitor(MiniDecafVisitor):
         self.__push('t0')
         return var.sym_type
 
-    def visitConditional(self, ctx: MiniDecafParser.ConditionalContext):
+    def visitConditional(self, ctx: MiniDecafParser.ConditionalContext) -> MiniDecafType:
         if len(ctx.children) == 1:  # or
             return self.visit(ctx.logicalOr())
         cur_conditional_count = self.condition_count
@@ -233,7 +233,7 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += f".terEnd{cur_conditional_count}:\n"
         return IntType()
 
-    def visitLogicalOr(self, ctx: MiniDecafParser.LogicalOrContext):
+    def visitLogicalOr(self, ctx: MiniDecafParser.LogicalOrContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # or || and
             self.visit(ctx.logicalOr())
             self.visit(ctx.logicalAnd())
@@ -242,7 +242,7 @@ class MainVisitor(MiniDecafVisitor):
         else:  # and
             return self.visit(ctx.logicalAnd())
 
-    def visitLogicalAnd(self, ctx: MiniDecafParser.LogicalAndContext):
+    def visitLogicalAnd(self, ctx: MiniDecafParser.LogicalAndContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # and || equ
             self.visit(ctx.logicalAnd())
             self.visit(ctx.equality())
@@ -251,7 +251,7 @@ class MainVisitor(MiniDecafVisitor):
         else:  # equ
             return self.visit(ctx.equality())
 
-    def visitEquality(self, ctx: MiniDecafParser.EqualityContext):
+    def visitEquality(self, ctx: MiniDecafParser.EqualityContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # equ op rel
             self.visit(ctx.equality())
             self.visit(ctx.relational())
@@ -266,7 +266,7 @@ class MainVisitor(MiniDecafVisitor):
         else:  # rel
             return self.visit(ctx.relational())
 
-    def visitRelational(self, ctx: MiniDecafParser.RelationalContext):
+    def visitRelational(self, ctx: MiniDecafParser.RelationalContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # rel op add
             self.visit(ctx.relational())
             self.visit(ctx.additive())
@@ -276,11 +276,11 @@ class MainVisitor(MiniDecafVisitor):
             self.asm_str += (f"# calculate {operator}\n"
                              f"\t{BIOPR2ASM[operator]}\n")
             self.__push('t0')
-            return IntType
+            return IntType()
         else:  # add
             return self.visit(ctx.additive())
 
-    def visitAdditive(self, ctx: MiniDecafParser.AdditiveContext):
+    def visitAdditive(self, ctx: MiniDecafParser.AdditiveContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # add op mul
             self.visit(ctx.additive())
             self.visit(ctx.multiplicative())
@@ -294,7 +294,7 @@ class MainVisitor(MiniDecafVisitor):
         else:  # mul
             return self.visit(ctx.multiplicative())
 
-    def visitMultiplicative(self, ctx: MiniDecafParser.MultiplicativeContext):
+    def visitMultiplicative(self, ctx: MiniDecafParser.MultiplicativeContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # mul op una
             self.visit(ctx.multiplicative())
             self.visit(ctx.unary())
@@ -308,7 +308,7 @@ class MainVisitor(MiniDecafVisitor):
         else:  # una
             return self.visit(ctx.unary())
 
-    def visitUnary(self, ctx: MiniDecafParser.UnaryContext):
+    def visitUnary(self, ctx: MiniDecafParser.UnaryContext) -> MiniDecafType:
         if len(ctx.children) == 1:  # primary
             return self.visit(ctx.primary())
         else:  # op una
@@ -320,7 +320,7 @@ class MainVisitor(MiniDecafVisitor):
             self.__push('t0')
             return IntType()
 
-    def visitNumPrimary(self, ctx: MiniDecafParser.NumPrimaryContext):
+    def visitNumPrimary(self, ctx: MiniDecafParser.NumPrimaryContext) -> MiniDecafType:
         num: TerminalNodeImpl = ctx.Integer()
         # overflow
         if int(num.getText()) > 0x7fffffff:
@@ -330,10 +330,10 @@ class MainVisitor(MiniDecafVisitor):
         self.__push('t0')
         return IntType()
 
-    def visitParenthesizedPrimary(self, ctx: MiniDecafParser.ParenthesizedPrimaryContext):
+    def visitParenthesizedPrimary(self, ctx: MiniDecafParser.ParenthesizedPrimaryContext) -> MiniDecafType:
         return self.visit(ctx.expression())
 
-    def visitIdentPrimary(self, ctx: MiniDecafParser.IdentPrimaryContext):
+    def visitIdentPrimary(self, ctx: MiniDecafParser.IdentPrimaryContext) -> MiniDecafType:
         name: str = ctx.Identifier().getText()
         var = self.symbol_table.lookup_all(name)
         if var is None:

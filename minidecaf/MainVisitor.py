@@ -1,15 +1,18 @@
-from typing import List
+from typing import List, Dict
 
 from antlr4.tree.Tree import TerminalNodeImpl
 
 from .Symbol import Symbol, SymbolTable
-from .Type import NoType, IntType, MiniDecafType
+from .Type import NoType, IntType, MiniDecafType, FuncType
 from .constants import UNOPR2ASM, BIOPR2ASM
 from .generated.MiniDecafParser import MiniDecafParser
 from .generated.MiniDecafVisitor import MiniDecafVisitor
 
 
 class MainVisitor(MiniDecafVisitor):
+    define_func_dict: Dict[str, FuncType]
+    declare_func_dict: Dict[str, FuncType]
+
     class FunctionInfo:
         name: str
 
@@ -28,20 +31,41 @@ class MainVisitor(MiniDecafVisitor):
         self.loop_count = 0
 
         self.loop_stack = []  # loop number stack for break and continue
+        # function dict
+        self.declare_func_dict = {}
+        self.define_func_dict = {}
 
     def visitProgram(self, ctx: MiniDecafParser.ProgramContext) -> MiniDecafType:
-        self.visit(ctx.function())
+        for child in ctx.children:
+            self.visit(child)
         if not self.contains_main:
             raise Exception("No main function.")
         return NoType()
 
-    def visitFunction(self, ctx: MiniDecafParser.FunctionContext) -> MiniDecafType:
-        self.current_function = self.FunctionInfo(ctx.Identifier().getText())
+    def visitDeclareFunc(self, ctx: MiniDecafParser.DeclareFuncContext) -> MiniDecafType:
+        func_name: str = ctx.Identifier(0).getText()
+        func_type = self.__get_func_type(ctx)
+        if self.declare_func_dict.get(func_name, func_type) != func_type:
+            raise Exception(f"Declare functions {func_name} but different signature.")
+        self.declare_func_dict[func_name] = func_type
+        return NoType()
+
+    def visitDefFunc(self, ctx: MiniDecafParser.DefFuncContext) -> MiniDecafType:
+        self.current_function = self.FunctionInfo(ctx.Identifier(0).getText())
         if self.current_function.name == "main":
             self.contains_main = True
         self.asm_str += (f"\t.text\n"  # .text notation
                          f"\t.global {self.current_function.name}\n"  # global label
                          f"{self.current_function.name}:\n")  # label name
+        # add func type
+        if self.current_function.name in self.define_func_dict:
+            raise Exception(f"Redefine function {self.current_function.name}.")
+        func_type = self.__get_func_type(ctx)
+        if self.declare_func_dict.get(self.current_function.name, func_type) != func_type:
+            raise Exception(f"{self.current_function.name} definition and declaration conflict.")
+        self.declare_func_dict[self.current_function.name] = func_type
+        self.define_func_dict[self.current_function.name] = func_type
+
         self.asm_str += "# function prologue\n"
         self.__push('ra')
         self.__push('fp')
@@ -49,6 +73,19 @@ class MainVisitor(MiniDecafVisitor):
         prologue_end = len(self.asm_str)
         # new scope
         self.symbol_table.add_scope()
+        # get parameters
+        for i in range(1, len(ctx.Identifier())):
+            para_name = ctx.Identifier(i).getText()
+            if self.symbol_table.lookup_top(para_name) is not None:
+                raise Exception(f"Two parameters named as {para_name}.")
+            if i < 9:  # load a[i-1] into stack
+                self.current_function.local_var_count += 1
+                self.asm_str += f"\tsw a{i - 1}, {-4 * i}(fp)\n"
+                self.symbol_table.add_symbol(Symbol(para_name, -4 * i, func_type.para_types[i - 1]))
+            else:  # currently in stack above ra and fp
+                self.symbol_table.add_symbol(Symbol(para_name, 4 * (i - 9 + 2), func_type.para_types[i - 1]))
+
+        # begin visiting
         for block_item in ctx.blockItem():
             self.visit(block_item)
         # pop scope
@@ -72,7 +109,7 @@ class MainVisitor(MiniDecafVisitor):
     def visitDeclaration(self, ctx: MiniDecafParser.DeclarationContext) -> MiniDecafType:
         name: str = ctx.Identifier().getText()
         if self.symbol_table.lookup_top(name) is not None:
-            raise Exception(f"redefine {name}.")
+            raise Exception(f"Redefine variable {name}.")
         self.current_function.local_var_count += 1
         symbol = Symbol(
             name, -4 * self.current_function.local_var_count, IntType()
@@ -191,14 +228,14 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitBreakStatement(self, ctx: MiniDecafParser.BreakStatementContext) -> MiniDecafType:
         if not self.loop_stack:
-            raise Exception("break statement is not in any loop.")
+            raise Exception("Break statement is not in any loop.")
         self.asm_str += (f"# break\n"
                          f"\tj .loopEnd{self.loop_stack[-1]}\n")
         return NoType()
 
     def visitContinueStatement(self, ctx: MiniDecafParser.ContinueStatementContext) -> MiniDecafType:
         if not self.loop_stack:
-            raise Exception("continue statement is not in any loop.")
+            raise Exception("Continue statement is not in any loop.")
         self.asm_str += (f"# contine\n"
                          f"\tj .continue{self.loop_stack[-1]}\n")
         return NoType()
@@ -309,8 +346,8 @@ class MainVisitor(MiniDecafVisitor):
             return self.visit(ctx.unary())
 
     def visitUnary(self, ctx: MiniDecafParser.UnaryContext) -> MiniDecafType:
-        if len(ctx.children) == 1:  # primary
-            return self.visit(ctx.primary())
+        if len(ctx.children) == 1:  # postfix
+            return self.visit(ctx.postfix())
         else:  # op una
             self.visit(ctx.unary())
             operator: str = ctx.children[0].getText()
@@ -318,6 +355,25 @@ class MainVisitor(MiniDecafVisitor):
             self.asm_str += (f"# calculate {operator}\n"
                              f"\t{UNOPR2ASM[operator]}\n")
             self.__push('t0')
+            return IntType()
+
+    def visitPostfix(self, ctx: MiniDecafParser.PostfixContext) -> MiniDecafType:
+        if len(ctx.children) == 1:  # primary
+            return self.visit(ctx.primary())
+        else:  # call function
+            name = ctx.Identifier().getText()
+            if name not in self.declare_func_dict:
+                raise Exception(f"Calling undeclared function {name}.")
+            fun_type = self.declare_func_dict[name]
+            if len(fun_type.para_types) != len(ctx.expression()):
+                raise Exception(f"{name} arguments mismatch")
+            self.asm_str += "# fill arguments\n"
+            for i in range(len(ctx.expression()) - 1, -1, -1):
+                self.visit(ctx.expression(i))
+                if i < 8:
+                    self.__pop(f'a{i}')
+            self.asm_str += f"\tcall {name}\n"
+            self.__push('a0')  # ret val
             return IntType()
 
     def visitNumPrimary(self, ctx: MiniDecafParser.NumPrimaryContext) -> MiniDecafType:
@@ -341,6 +397,9 @@ class MainVisitor(MiniDecafVisitor):
         self.__read_var(var)
         self.__push('t0')
         return var.sym_type
+
+    def visitVarType(self, ctx: MiniDecafParser.VarTypeContext) -> MiniDecafType:
+        return IntType()
 
     def __pop(self, reg: str):
         self.asm_str += (f"# pop {reg}\n"
@@ -372,3 +431,11 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += (f"# calculate {operator}\n"
                          f"\t{operator} t0, t0, t1\n")
         self.__push('t0')
+
+    def __get_func_type(self, ctx) -> FuncType:
+        ret_type: MiniDecafType = self.visit(ctx.varType(0))
+        para_types: List[MiniDecafType] = []
+        for i in range(1, len(ctx.varType())):
+            para_types.append(self.visit(ctx.varType(i)))
+        func_type = FuncType(ret_type, para_types)
+        return func_type

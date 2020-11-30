@@ -2,10 +2,12 @@ grammar MiniDecaf;
 
 //parser
 program
-    : function EOF;
+    : function* EOF;
 
 function
-    : varType Identifier '(' ')' '{' blockItem* '}';
+    : varType Identifier '(' (varType Identifier (',' varType Identifier)*)? ')' '{' blockItem* '}' # defFunc
+    | varType Identifier '(' (varType Identifier (',' varType Identifier)*)? ')' ';' # declareFunc
+    ;
 
 // 'type' conflict with python keyword, so rename to varType
 varType
@@ -63,8 +65,12 @@ multiplicative
     | multiplicative ('*'|'/'|'%') unary;
 
 unary
-    : primary
+    : postfix
     | ('-'|'~'|'!') unary;
+
+postfix
+    : primary
+    | Identifier '(' (expression (',' expression)*)? ')';
 
 primary
     :  Integer # numPrimary

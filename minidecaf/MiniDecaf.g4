@@ -2,7 +2,7 @@ grammar MiniDecaf;
 
 //parser
 program
-    : function* EOF;
+    : (function | globalVar)* EOF;
 
 function
     : varType Identifier '(' (varType Identifier (',' varType Identifier)*)? ')' '{' blockItem* '}' # defFunc
@@ -16,6 +16,9 @@ varType
 blockItem
     : declaration
     | statement;
+
+globalVar
+    : varType Identifier ('=' Integer)? ';';
 
 statement
     : 'return' expression ';' # retStatement

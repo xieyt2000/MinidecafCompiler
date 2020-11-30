@@ -10,6 +10,8 @@ from .generated.MiniDecafVisitor import MiniDecafVisitor
 
 
 class MainVisitor(MiniDecafVisitor):
+    declare_global_var_dict: Dict[str, MiniDecafType]
+    init_global_var_dict: Dict[str, MiniDecafType]
     define_func_dict: Dict[str, FuncType]
     declare_func_dict: Dict[str, FuncType]
 
@@ -34,16 +36,24 @@ class MainVisitor(MiniDecafVisitor):
         # function dict
         self.declare_func_dict = {}
         self.define_func_dict = {}
+        # global var dict
+        self.declare_global_var_dict = {}
+        self.init_global_var_dict = {}
 
     def visitProgram(self, ctx: MiniDecafParser.ProgramContext) -> MiniDecafType:
         for child in ctx.children:
             self.visit(child)
+        for name, var_type in self.declare_global_var_dict.items():
+            if name not in self.init_global_var_dict:
+                self.asm_str += f"\t.comm {name}, {var_type.get_size()}, 4\n"
         if not self.contains_main:
             raise Exception("No main function.")
         return NoType()
 
     def visitDeclareFunc(self, ctx: MiniDecafParser.DeclareFuncContext) -> MiniDecafType:
         func_name: str = ctx.Identifier(0).getText()
+        if func_name in self.declare_global_var_dict:
+            raise Exception(f"{func_name} is already defined as a global variable.")
         func_type = self.__get_func_type(ctx)
         if self.declare_func_dict.get(func_name, func_type) != func_type:
             raise Exception(f"Declare functions {func_name} but different signature.")
@@ -52,6 +62,8 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitDefFunc(self, ctx: MiniDecafParser.DefFuncContext) -> MiniDecafType:
         self.current_function = self.FunctionInfo(ctx.Identifier(0).getText())
+        if self.current_function.name in self.declare_global_var_dict:
+            raise Exception(f"{self.current_function.name} is already defined as a global variable.")
         if self.current_function.name == "main":
             self.contains_main = True
         self.asm_str += (f"\t.text\n"  # .text notation
@@ -106,6 +118,26 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += "\tret\n\n"
         return NoType()
 
+    def visitGlobalVar(self, ctx: MiniDecafParser.GlobalVarContext) -> MiniDecafType:
+        var_name = ctx.Identifier().getText()
+        if var_name in self.declare_func_dict:
+            raise Exception(f"{var_name} is already defined as a function.")
+        var_type = self.visit(ctx.varType())
+        if self.declare_func_dict.get(var_name, var_type) != var_type:
+            raise Exception(f"{var_name} is already defined with a different type.")
+        self.declare_global_var_dict[var_name] = var_type
+
+        num = ctx.Integer()
+        if num is not None:
+            if var_name in self.init_global_var_dict:
+                raise Exception(f"{var_name} is already initialized")
+            self.init_global_var_dict[var_name] = var_type
+            self.asm_str += ("\t.data\n"
+                             "\t.align 4\n"
+                             f"{var_name}:\n"
+                             f"\t.word {num.getText()}\n")
+        return NoType()
+
     def visitDeclaration(self, ctx: MiniDecafParser.DeclarationContext) -> MiniDecafType:
         name: str = ctx.Identifier().getText()
         if self.symbol_table.lookup_top(name) is not None:
@@ -120,7 +152,7 @@ class MainVisitor(MiniDecafVisitor):
         if expression is not None:
             self.visit(expression)
             self.__pop('t0')
-            self.__write_var(symbol)
+            self.__write_local_var(symbol)
         return NoType()
 
     def visitExprStatement(self, ctx: MiniDecafParser.ExprStatementContext) -> MiniDecafType:
@@ -245,14 +277,20 @@ class MainVisitor(MiniDecafVisitor):
             return self.visit(ctx.conditional())
         # ident = expression
         name: str = ctx.Identifier().getText()
-        var: Symbol = self.symbol_table.lookup_all(name)
-        if var is None:
-            raise Exception(f"{name} is undefined.")
         self.visit(ctx.expression())
-        self.__pop('t0')
-        self.__write_var(var)
-        self.__push('t0')
-        return var.sym_type
+        local_var: Symbol = self.symbol_table.lookup_all(name)
+        if local_var is not None:
+            self.__pop('t0')
+            self.__write_local_var(local_var)
+            self.__push('t0')
+            return local_var.sym_type
+        elif name in self.declare_global_var_dict:
+            self.__pop('t0')
+            self.__write_global_var(name)
+            self.__push('t0')
+            return self.declare_global_var_dict[name]
+        else:
+            raise Exception(f"{name} is undefined.")
 
     def visitConditional(self, ctx: MiniDecafParser.ConditionalContext) -> MiniDecafType:
         if len(ctx.children) == 1:  # or
@@ -391,12 +429,17 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitIdentPrimary(self, ctx: MiniDecafParser.IdentPrimaryContext) -> MiniDecafType:
         name: str = ctx.Identifier().getText()
-        var = self.symbol_table.lookup_all(name)
-        if var is None:
+        local_var = self.symbol_table.lookup_all(name)
+        if local_var is not None:
+            self.__read_var(local_var)
+            self.__push('t0')
+            return local_var.sym_type
+        elif name in self.declare_global_var_dict:
+            self.__read_global_var(name)
+            self.__push('t0')
+            return self.declare_global_var_dict[name]
+        else:
             raise Exception(f"{name} is undefined.")
-        self.__read_var(var)
-        self.__push('t0')
-        return var.sym_type
 
     def visitVarType(self, ctx: MiniDecafParser.VarTypeContext) -> MiniDecafType:
         return IntType()
@@ -415,13 +458,23 @@ class MainVisitor(MiniDecafVisitor):
         self.asm_str += (f"# set bool\n"
                          f"\tsnez {reg}, {reg}\n")
 
-    def __write_var(self, var: Symbol):
+    def __write_local_var(self, var: Symbol):  # write var with val in t0
         self.asm_str += (f"# write variable {var.name}\n"
                          f"\tsw t0, {var.offset}(fp)\n")
+
+    def __write_global_var(self, name):  # write var with val in t0
+        self.asm_str += (f"# write global variable {name}\n"
+                         f"\tla t1, {name}\n"
+                         f"\tsw t0, 0(t1)\n")
 
     def __read_var(self, symbol: Symbol):
         self.asm_str += (f"# read variable {symbol.name}\n"
                          f"\tlw t0, {symbol.offset}(fp)\n")
+
+    def __read_global_var(self, name):
+        self.asm_str += (f"# read global variable {name}\n"
+                         f"\tla t1, {name}\n"
+                         f"\tlw t0, 0(t1)\n")
 
     def __logic_operation(self, operator: str):
         self.__pop('t1')

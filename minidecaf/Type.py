@@ -1,12 +1,25 @@
+import abc
 from typing import List
 
 
-class MiniDecafType:
+class MiniDecafType(abc.ABC):
+    @abc.abstractmethod
     def __init__(self, name):
         self.name = name
 
+    @abc.abstractmethod
+    def __eq__(self, other):
+        pass
+
+    @abc.abstractmethod
+    def get_size(self):
+        pass
+
 
 class NoType(MiniDecafType):
+    def get_size(self):
+        raise Exception('Cannot get size of NoType.')
+
     def __init__(self):
         super().__init__("NoType")
 
@@ -15,6 +28,9 @@ class NoType(MiniDecafType):
 
 
 class IntType(MiniDecafType):
+    def get_size(self):
+        return 4
+
     def __init__(self):
         super().__init__("IntType")
 

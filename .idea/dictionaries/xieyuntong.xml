@@ -4,7 +4,9 @@
       <w>beqz</w>
       <w>bnez</w>
       <w>minidecaf</w>
+      <w>slli</w>
       <w>snez</w>
+      <w>srai</w>
     </words>
   </dictionary>
 </component>

@@ -3,7 +3,7 @@ from typing import List, Dict
 from antlr4.tree.Tree import TerminalNodeImpl
 
 from .Symbol import Symbol, SymbolTable
-from .Type import NoType, IntType, MiniDecafType, FuncType
+from .Type import NoType, IntType, MiniDecafType, FuncType, ValueCategory, PointerType
 from .constants import UNOPR2ASM, BIOPR2ASM
 from .generated.MiniDecafParser import MiniDecafParser
 from .generated.MiniDecafVisitor import MiniDecafVisitor
@@ -93,9 +93,13 @@ class MainVisitor(MiniDecafVisitor):
             if i < 9:  # load a[i-1] into stack
                 self.current_function.local_var_count += 1
                 self.asm_str += f"\tsw a{i - 1}, {-4 * i}(fp)\n"
-                self.symbol_table.add_symbol(Symbol(para_name, -4 * i, func_type.para_types[i - 1]))
+                self.symbol_table.add_symbol(
+                    Symbol(para_name, -4 * i,
+                           func_type.para_types[i - 1].value_category_cast(ValueCategory.lvalue)))
             else:  # currently in stack above ra and fp
-                self.symbol_table.add_symbol(Symbol(para_name, 4 * (i - 9 + 2), func_type.para_types[i - 1]))
+                self.symbol_table.add_symbol(
+                    Symbol(para_name, 4 * (i - 9 + 2),
+                           func_type.para_types[i - 1].value_category_cast(ValueCategory.lvalue)))
 
         # begin visiting
         for block_item in ctx.blockItem():
@@ -122,16 +126,16 @@ class MainVisitor(MiniDecafVisitor):
         var_name = ctx.Identifier().getText()
         if var_name in self.declare_func_dict:
             raise Exception(f"{var_name} is already defined as a function.")
-        var_type = self.visit(ctx.varType())
+        var_type: MiniDecafType = self.visit(ctx.varType())
         if self.declare_func_dict.get(var_name, var_type) != var_type:
             raise Exception(f"{var_name} is already defined with a different type.")
-        self.declare_global_var_dict[var_name] = var_type
+        self.declare_global_var_dict[var_name] = var_type.value_category_cast(ValueCategory.lvalue)
 
         num = ctx.Integer()
         if num is not None:
             if var_name in self.init_global_var_dict:
                 raise Exception(f"{var_name} is already initialized")
-            self.init_global_var_dict[var_name] = var_type
+            self.init_global_var_dict[var_name] = var_type.value_category_cast(ValueCategory.rvalue)
             self.asm_str += ("\t.data\n"
                              "\t.align 4\n"
                              f"{var_name}:\n"
@@ -143,14 +147,17 @@ class MainVisitor(MiniDecafVisitor):
         if self.symbol_table.lookup_top(name) is not None:
             raise Exception(f"Redefine variable {name}.")
         self.current_function.local_var_count += 1
+        var_type: MiniDecafType = self.visit(ctx.varType())
         symbol = Symbol(
-            name, -4 * self.current_function.local_var_count, IntType()
+            name, -4 * self.current_function.local_var_count, var_type.value_category_cast(ValueCategory.lvalue)
         )
         self.symbol_table.add_symbol(symbol)
         # initialize
         expression = ctx.expression()
         if expression is not None:
-            self.visit(expression)
+            expression_type = self.type_check(self.visit(expression))
+            if not expression_type == var_type:
+                raise Exception(f"Assign {expression_type} to {var_type} variable {name}.")
             self.__pop('t0')
             self.__write_local_var(symbol)
         return NoType()
@@ -163,7 +170,10 @@ class MainVisitor(MiniDecafVisitor):
         return NoType()
 
     def visitRetStatement(self, ctx: MiniDecafParser.RetStatementContext) -> MiniDecafType:
-        self.visit(ctx.expression())
+        return_type = self.type_check(self.visit(ctx.expression()))
+        expected_type = self.define_func_dict[self.current_function.name].ret_type
+        if expected_type != return_type:
+            raise Exception(f"Return {return_type} instead of {expected_type} in signature")
         self.asm_str += f"\tj .exit.{self.current_function.name}\n"
         return NoType()
 
@@ -172,7 +182,7 @@ class MainVisitor(MiniDecafVisitor):
         self.condition_count += 1
 
         self.asm_str += f"# the {cur_conditional_count}th conditional (if)\n"
-        self.visit(ctx.expression())
+        self.type_check(self.visit(ctx.expression()), IntType)
         self.__pop("t0")
         self.asm_str += (f"\tbeqz t0, .else{cur_conditional_count}\n"
                          f"# then\n")
@@ -196,7 +206,7 @@ class MainVisitor(MiniDecafVisitor):
         self.loop_count += 1
         self.asm_str += (f"# the {cur_loop_count} loop (while)\n"
                          f".continue{cur_loop_count}:\n")
-        self.visit(ctx.expression())
+        self.type_check(self.visit(ctx.expression()), IntType)
         self.__pop('t0')
         self.asm_str += f"\tbeqz t0, .loopEnd{cur_loop_count}\n"
         self.loop_stack.append(cur_loop_count)
@@ -225,7 +235,7 @@ class MainVisitor(MiniDecafVisitor):
             self.visit(ctx.declaration())
         self.asm_str += f".loopBegin{cur_loop_count}:\n"
         if for_expression[1] is not None:  # condition
-            self.visit(for_expression[1])
+            self.type_check(self.visit(for_expression[1]), IntType)
             self.__pop('t1')
             self.asm_str += f"beqz t1, .loopEnd{cur_loop_count}\n"
         self.loop_stack.append(cur_loop_count)
@@ -252,7 +262,7 @@ class MainVisitor(MiniDecafVisitor):
         self.visit(ctx.statement())
         self.loop_stack.pop()
         self.asm_str += f".continue{cur_loop_count}:\n"
-        self.visit(ctx.expression())
+        self.type_check(self.visit(ctx.expression()), IntType)
         self.__pop('t0')  # expression won't be used again
         self.asm_str += f"\tbnez t0, .loopBegin{cur_loop_count}\n" \
                         f".loopEnd{cur_loop_count}:\n"
@@ -276,42 +286,40 @@ class MainVisitor(MiniDecafVisitor):
         if len(ctx.children) == 1:  # conditional
             return self.visit(ctx.conditional())
         # ident = expression
-        name: str = ctx.Identifier().getText()
-        self.visit(ctx.expression())
-        local_var: Symbol = self.symbol_table.lookup_all(name)
-        if local_var is not None:
-            self.__pop('t0')
-            self.__write_local_var(local_var)
-            self.__push('t0')
-            return local_var.sym_type
-        elif name in self.declare_global_var_dict:
-            self.__pop('t0')
-            self.__write_global_var(name)
-            self.__push('t0')
-            return self.declare_global_var_dict[name]
-        else:
-            raise Exception(f"{name} is undefined.")
+        unary_type = self.type_check(self.visit(ctx.unary()), MiniDecafType, ValueCategory.lvalue)
+        expr_type = self.type_check(self.visit(ctx.expression()))
+        if expr_type != unary_type.value_category_cast(ValueCategory.rvalue):
+            raise Exception(f"Assign {expr_type} to {unary_type} variable")
+        self.__pop('t1')  # expr value
+        self.__pop('t0')  # unary addr
+        self.asm_str += (f"# assign\n"
+                         f"\tsw t1, 0(t0)\n")
+        self.__push('t0')
+        return unary_type
 
     def visitConditional(self, ctx: MiniDecafParser.ConditionalContext) -> MiniDecafType:
         if len(ctx.children) == 1:  # or
             return self.visit(ctx.logicalOr())
+        # ternary
         cur_conditional_count = self.condition_count
         self.condition_count += 1
         self.asm_str += f"# the {cur_conditional_count}th conditional (ternary)\n"
-        self.visit(ctx.logicalOr())
+        self.type_check(self.visit(ctx.logicalOr()), IntType)
         self.__pop('t0')
         self.asm_str += f"\tbeqz t0, .else{cur_conditional_count}\n"
-        self.visit(ctx.expression())
+        ten_true_type = self.type_check(self.visit(ctx.expression()))
         self.asm_str += f"\tj .terEnd{cur_conditional_count}\n" \
                         f".else{cur_conditional_count}:\n"
-        self.visit(ctx.conditional())
+        ten_false_type = self.type_check(self.visit(ctx.conditional()))
         self.asm_str += f".terEnd{cur_conditional_count}:\n"
-        return IntType()
+        if ten_false_type != ten_true_type:
+            raise Exception("Ternary operator with two different result type.")
+        return ten_false_type
 
     def visitLogicalOr(self, ctx: MiniDecafParser.LogicalOrContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # or || and
-            self.visit(ctx.logicalOr())
-            self.visit(ctx.logicalAnd())
+            self.type_check(self.visit(ctx.logicalOr()), IntType)
+            self.type_check(self.visit(ctx.logicalAnd()), IntType)
             self.__logic_operation('or')
             return IntType()
         else:  # and
@@ -319,8 +327,8 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitLogicalAnd(self, ctx: MiniDecafParser.LogicalAndContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # and || equ
-            self.visit(ctx.logicalAnd())
-            self.visit(ctx.equality())
+            self.type_check(self.visit(ctx.logicalAnd()), IntType)
+            self.type_check(self.visit(ctx.equality()), IntType)
             self.__logic_operation('and')
             return IntType()
         else:  # equ
@@ -328,8 +336,10 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitEquality(self, ctx: MiniDecafParser.EqualityContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # equ op rel
-            self.visit(ctx.equality())
-            self.visit(ctx.relational())
+            equ_type = self.type_check(self.visit(ctx.equality()))
+            rel_type = self.type_check(self.visit(ctx.relational()))
+            if equ_type != rel_type:
+                raise Exception("Equality operator with different type.")
             self.__pop('t1')
             self.__pop('t0')
             operator: str = ctx.children[1].getText()
@@ -343,8 +353,8 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitRelational(self, ctx: MiniDecafParser.RelationalContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # rel op add
-            self.visit(ctx.relational())
-            self.visit(ctx.additive())
+            self.type_check(self.visit(ctx.relational()), IntType)
+            self.type_check(self.visit(ctx.additive()), IntType)
             self.__pop('t1')
             self.__pop('t0')
             operator: str = ctx.children[1].getText()
@@ -357,22 +367,51 @@ class MainVisitor(MiniDecafVisitor):
 
     def visitAdditive(self, ctx: MiniDecafParser.AdditiveContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # add op mul
-            self.visit(ctx.additive())
-            self.visit(ctx.multiplicative())
+            left_type = self.type_check(self.visit(ctx.additive()))
+            right_type = self.type_check(self.visit(ctx.multiplicative()))
             self.__pop('t1')
             self.__pop('t0')
             operator: str = ctx.children[1].getText()
-            self.asm_str += (f"# calculate {operator}\n"
-                             f"\t{BIOPR2ASM[operator]}\n")
+            ret_type: MiniDecafType = IntType()
+            additional_asm = ""
+            if operator == '+':
+                if isinstance(left_type, IntType) and isinstance(right_type, IntType):
+                    self.asm_str += f"# calculate int + int\n"
+                    ret_type = IntType()
+                elif isinstance(left_type, PointerType) and isinstance(right_type, IntType):
+                    self.asm_str += (f"# pointer + int\n"
+                                     f"\tslli t1, t1, 2\n")
+                    ret_type = left_type
+                elif isinstance(left_type, IntType) and isinstance(right_type, PointerType):
+                    self.asm_str += (f"# int + pointer\n"
+                                     f"\tslli t0, t0, 2\n")
+                    ret_type = right_type
+                else:
+                    raise Exception(f"Illegal type for addition: {left_type}, {right_type}.")
+            else:
+                if isinstance(left_type, IntType) and isinstance(right_type, IntType):
+                    self.asm_str += f"# calculate int - int\n"
+                    ret_type = IntType()
+                elif isinstance(left_type, PointerType) and isinstance(right_type, IntType):
+                    self.asm_str += (f"# pointer - int\n"
+                                     f"\tslli t1, t1, 2\n")
+                    ret_type = left_type
+                elif isinstance(left_type, IntType) and right_type == left_type:
+                    self.asm_str += f"# pointer - pointer\n"
+                    additional_asm = "\tsrai t0, t0, 2\n"
+                    ret_type = IntType()
+                else:
+                    raise Exception(f"Illegal type for subtraction: {left_type}, {right_type}.")
+            self.asm_str += f"\t{BIOPR2ASM[operator]}\n{additional_asm}"
             self.__push("t0")
-            return IntType()
+            return ret_type
         else:  # mul
             return self.visit(ctx.multiplicative())
 
     def visitMultiplicative(self, ctx: MiniDecafParser.MultiplicativeContext) -> MiniDecafType:
         if len(ctx.children) > 1:  # mul op una
-            self.visit(ctx.multiplicative())
-            self.visit(ctx.unary())
+            self.type_check(self.visit(ctx.multiplicative()), IntType)
+            self.type_check(self.visit(ctx.unary()), IntType)
             operator: str = ctx.children[1].getText()
             self.__pop('t1')
             self.__pop('t0')
@@ -383,17 +422,28 @@ class MainVisitor(MiniDecafVisitor):
         else:  # una
             return self.visit(ctx.unary())
 
-    def visitUnary(self, ctx: MiniDecafParser.UnaryContext) -> MiniDecafType:
-        if len(ctx.children) == 1:  # postfix
-            return self.visit(ctx.postfix())
-        else:  # op una
-            self.visit(ctx.unary())
-            operator: str = ctx.children[0].getText()
+    def visitOpUnary(self, ctx: MiniDecafParser.OpUnaryContext) -> MiniDecafType:
+        var_type: MiniDecafType = self.visit(ctx.unary())
+        operator: str = ctx.children[0].getText()
+        if operator == '*':
+            return self.type_check(var_type).dereference()
+        elif operator == '&':
+            return var_type.reference()
+        else:
+            self.type_check(var_type, IntType)
             self.__pop('t0')
-            self.asm_str += (f"# calculate {operator}\n"
+            self.asm_str += (f"# calculate {operator}int\n"
                              f"\t{UNOPR2ASM[operator]}\n")
             self.__push('t0')
             return IntType()
+
+    def visitCastUnary(self, ctx: MiniDecafParser.CastUnaryContext) -> MiniDecafType:
+        src_type: MiniDecafType = self.visit(ctx.unary())
+        dst_type: MiniDecafType = self.visit(ctx.varType())
+        return dst_type.value_category_cast(src_type.value_cat)
+
+    def visitPostfixUnary(self, ctx: MiniDecafParser.PostfixUnaryContext) -> MiniDecafType:
+        return self.visit(ctx.postfix())
 
     def visitPostfix(self, ctx: MiniDecafParser.PostfixContext) -> MiniDecafType:
         if len(ctx.children) == 1:  # primary
@@ -407,12 +457,14 @@ class MainVisitor(MiniDecafVisitor):
                 raise Exception(f"{name} arguments mismatch")
             self.asm_str += "# fill arguments\n"
             for i in range(len(ctx.expression()) - 1, -1, -1):
-                self.visit(ctx.expression(i))
+                arg_type = self.type_check(self.visit(ctx.expression(i)))
+                if arg_type != fun_type.para_types[i]:
+                    raise Exception(f"{name} call {i}th parameter type mismatch.")
                 if i < 8:
                     self.__pop(f'a{i}')
             self.asm_str += f"\tcall {name}\n"
             self.__push('a0')  # ret val
-            return IntType()
+            return fun_type.ret_type
 
     def visitNumPrimary(self, ctx: MiniDecafParser.NumPrimaryContext) -> MiniDecafType:
         num: TerminalNodeImpl = ctx.Integer()
@@ -442,7 +494,10 @@ class MainVisitor(MiniDecafVisitor):
             raise Exception(f"{name} is undefined.")
 
     def visitVarType(self, ctx: MiniDecafParser.VarTypeContext) -> MiniDecafType:
-        return IntType()
+        pointer_level = len(ctx.children) - 1
+        if pointer_level == 0:
+            return IntType()
+        return PointerType(pointer_level)
 
     def __pop(self, reg: str):
         self.asm_str += (f"# pop {reg}\n"
@@ -468,13 +523,12 @@ class MainVisitor(MiniDecafVisitor):
                          f"\tsw t0, 0(t1)\n")
 
     def __read_var(self, symbol: Symbol):
-        self.asm_str += (f"# read variable {symbol.name}\n"
-                         f"\tlw t0, {symbol.offset}(fp)\n")
+        self.asm_str += (f"# read variable {symbol.name} as lvalue\n"
+                         f"\taddi t0, fp, {symbol.offset}\n")
 
     def __read_global_var(self, name):
-        self.asm_str += (f"# read global variable {name}\n"
-                         f"\tla t1, {name}\n"
-                         f"\tlw t0, 0(t1)\n")
+        self.asm_str += (f"# read global variable {name} as lvalue\n"
+                         f"\tla t0, {name}\n")
 
     def __logic_operation(self, operator: str):
         self.__pop('t1')
@@ -492,3 +546,17 @@ class MainVisitor(MiniDecafVisitor):
             para_types.append(self.visit(ctx.varType(i)))
         func_type = FuncType(ret_type, para_types)
         return func_type
+
+    def type_check(self, type_actual: MiniDecafType, type_expect=MiniDecafType,
+                   value_cat_req=ValueCategory.rvalue) -> MiniDecafType:
+        if not issubclass(type(type_actual), type_expect):
+            raise Exception(f'Expect type {type(type_expect).__name__} but got {type(type_actual).__name__}.')
+        if value_cat_req == ValueCategory.lvalue and type_actual.value_cat == ValueCategory.rvalue:
+            raise Exception('Expect lvalue but got rvalue.')
+        if value_cat_req == ValueCategory.rvalue and type_actual.value_cat == ValueCategory.lvalue:
+            self.__pop('t0')
+            self.asm_str += ("# cast lvalue to rvalue\n"
+                             f"\t lw t0, 0(t0)\n")
+            self.__push('t0')
+            return type_actual.value_category_cast(ValueCategory.rvalue)
+        return type_actual.value_category_cast(value_cat_req)

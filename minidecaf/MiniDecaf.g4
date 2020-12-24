@@ -11,7 +11,7 @@ function
 
 // 'type' conflict with python keyword, so rename to varType
 varType
-    : 'int';
+    : 'int' '*'*;
 
 blockItem
     : declaration
@@ -36,7 +36,7 @@ declaration
     : varType Identifier ('=' expression)? ';';
 
 expression
-    : Identifier '=' expression
+    : unary '=' expression
     | conditional;
 
 conditional
@@ -68,9 +68,10 @@ multiplicative
     | multiplicative ('*'|'/'|'%') unary;
 
 unary
-    : postfix
-    | ('-'|'~'|'!') unary;
-
+    : postfix # postfixUnary
+    | ('-'|'~'|'!'|'&'|'*') unary # opUnary
+    | '(' varType ')' unary # castUnary
+    ;
 postfix
     : primary
     | Identifier '(' (expression (',' expression)*)? ')';

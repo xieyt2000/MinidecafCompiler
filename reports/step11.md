@@ -71,8 +71,8 @@ if not issubclass(type(type_actual), type_expect):
 ```python
 def visitEquality(self, ctx: MiniDecafParser.EqualityContext) -> MiniDecafType:
     if len(ctx.children) > 1:  # equ op rel
-        equ_type = self.type_check(self.visit(ctx.equality()))
-        rel_type = self.type_check(self.visit(ctx.relational()))
+        equ_type = self.__type_check(self.visit(ctx.equality()))
+        rel_type = self.__type_check(self.visit(ctx.relational()))
         if equ_type != rel_type:
             raise Exception("Equality operator with different type.")
 ```
@@ -116,7 +116,7 @@ def visitOpUnary(self, ctx: MiniDecafParser.OpUnaryContext) -> MiniDecafType:
     var_type: MiniDecafType = self.visit(ctx.unary())
     operator: str = ctx.children[0].getText()
     if operator == '*':
-        return self.type_check(var_type).dereference()
+        return self.__type_check(var_type).dereference()
     elif operator == '&':
         return var_type.reference()
 ```

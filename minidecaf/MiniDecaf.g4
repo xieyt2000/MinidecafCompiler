@@ -18,7 +18,9 @@ blockItem
     | statement;
 
 globalVar
-    : varType Identifier ('=' Integer)? ';';
+    : varType Identifier ('=' Integer)? ';' # globalIntOrPointer
+    | varType Identifier ('[' Integer ']')+ ';' # globalArray
+    ;
 
 statement
     : 'return' expression ';' # retStatement
@@ -33,7 +35,9 @@ statement
     ;
 
 declaration
-    : varType Identifier ('=' expression)? ';';
+    : varType Identifier ('=' expression)? ';' # intOrPointerDecl
+    | varType Identifier ('['Integer']')+ ';' # arrayDecl
+    ;
 
 expression
     : unary '=' expression
@@ -73,8 +77,10 @@ unary
     | '(' varType ')' unary # castUnary
     ;
 postfix
-    : primary
-    | Identifier '(' (expression (',' expression)*)? ')';
+    : primary # primaryPostfix
+    | Identifier '(' (expression (',' expression)*)? ')' # funcCallPostfix
+    | postfix '[' expression ']' # arrayPostfix
+    ;
 
 primary
     :  Integer # numPrimary

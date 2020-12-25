@@ -104,6 +104,33 @@ class IntType(MiniDecafType):
         return isinstance(other, IntType) and self.value_cat == other.value_cat
 
 
+class ArrayType(MiniDecafType):
+    size: int
+    base_type: MiniDecafType
+
+    def __init__(self, base_type, length):
+        super().__init__(f"ArrayType<{base_type}>({length})")
+        self.base_type = base_type
+        self.size = length * base_type.get_size()
+
+    def __eq__(self, other):
+        return isinstance(other, ArrayType) and self.size == other.get_size() and self.base_type == other.base_type
+
+    def get_size(self):
+        return self.size
+
+    def reference(self):
+        raise Exception("Cannot reference array.")
+
+    def dereference(self):
+        raise Exception("Cannot dereference array.")
+
+    def value_category_cast(self, target_value_cat: ValueCategory):
+        if target_value_cat == ValueCategory.lvalue:
+            raise Exception("Cannot cast array to lvalue.")
+        return self
+
+
 class FuncType:
     para_types: List[MiniDecafType]
     ret_type: MiniDecafType
